@@ -14,7 +14,6 @@ import {
   Filler
 } from 'chart.js'
 
-// Registra componenti Chart.js
 ChartJS.register(
   CategoryScale,
   LinearScale,
@@ -30,17 +29,12 @@ ChartJS.register(
 
 const API_URL = 'http://localhost:8000'
 
-// ============================================
-// iOS MODERN WIDGET BOARD CON CHART.JS
-// ============================================
-
 function App() {
   const [meetingData, setMeetingData] = useState(null)
   const [participants, setParticipants] = useState([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
 
-  // Configurazioni widget
   const [widgetConfigs, setWidgetConfigs] = useState({
     messages: {
       participantFilter: null,
@@ -201,14 +195,13 @@ function App() {
 
   return (
     <div style={styles.appContainer}>
-      {/* HEADER */}
       <div style={styles.header}>
         <div style={styles.headerContent}>
           <div style={styles.headerLeft}>
             <div style={styles.logoCircle}>MI</div>
             <div>
               <h1 style={styles.title}>Meeting Intelligence</h1>
-              <p style={styles.subtitle}>MTG-001 · Chart.js Integration</p>
+              <p style={styles.subtitle}>MTG-001 · Chart.js (Timeline FIXED v2)</p>
             </div>
           </div>
         </div>
@@ -230,7 +223,6 @@ function App() {
 
       {!loading && meetingData && (
         <div style={styles.widgetGrid}>
-          {/* KPI Widget - Messages */}
           <CustomizableWidget
             widgetId="messages"
             title="Messages"
@@ -251,7 +243,6 @@ function App() {
             })()}
           </CustomizableWidget>
 
-          {/* KPI Widget - Sentiment */}
           <CustomizableWidget
             widgetId="sentiment"
             title="Sentiment"
@@ -277,7 +268,6 @@ function App() {
             })()}
           </CustomizableWidget>
 
-          {/* KPI Widget - Toxicity */}
           <CustomizableWidget
             widgetId="toxicity"
             title="Toxicity"
@@ -303,7 +293,6 @@ function App() {
             })()}
           </CustomizableWidget>
 
-          {/* Sentiment Distribution - CHART.JS BAR */}
           <CustomizableWidget
             widgetId="sentimentDist"
             title="Sentiment Distribution"
@@ -326,7 +315,6 @@ function App() {
             })()}
           </CustomizableWidget>
 
-          {/* Timeline Sentiment - CHART.JS LINE */}
           <CustomizableWidget
             widgetId="timelineSentiment"
             title="Sentiment Timeline"
@@ -348,7 +336,6 @@ function App() {
             })()}
           </CustomizableWidget>
 
-          {/* Timeline Toxicity - CHART.JS LINE */}
           <CustomizableWidget
             widgetId="timelineToxicity"
             title="Toxicity Timeline"
@@ -370,7 +357,6 @@ function App() {
             })()}
           </CustomizableWidget>
 
-          {/* Toxicity Gauge - CHART.JS DOUGHNUT */}
           <CustomizableWidget
             widgetId="toxicityGauge"
             title="Toxicity Level"
@@ -392,7 +378,6 @@ function App() {
             })()}
           </CustomizableWidget>
 
-          {/* Message Stream */}
           <CustomizableWidget
             widgetId="messageStream"
             title="Message Stream"
@@ -420,7 +405,7 @@ function App() {
 }
 
 // ============================================
-// SENTIMENT DISTRIBUTION - CHART.JS BAR
+// SENTIMENT DISTRIBUTION
 // ============================================
 
 function SentimentDistributionChartJS({ data, config }) {
@@ -514,7 +499,7 @@ function SentimentDistributionChartJS({ data, config }) {
 }
 
 // ============================================
-// TIMELINE CHART - CHART.JS LINE
+// TIMELINE CHART - DEFINITIVAMENTE FIXED!
 // ============================================
 
 function TimelineChartJS({ messages, config }) {
@@ -522,6 +507,17 @@ function TimelineChartJS({ messages, config }) {
     return <div style={styles.emptyState}>No data</div>
   }
 
+  // Helper: Formatta timestamp
+  const formatTime = (timestamp) => {
+    const parts = timestamp.split(':')
+    const minutes = parseInt(parts[1])
+    const seconds = parseInt(parts[2].split('.')[0])
+    
+    // Formato MM:SS
+    return `${minutes}:${seconds.toString().padStart(2, '0')}`
+  }
+
+  // Prepara dati
   const dataPoints = messages.map((msg, idx) => {
     const score = config.metric === 'sentiment' 
       ? msg.sentiment.score 
@@ -530,23 +526,36 @@ function TimelineChartJS({ messages, config }) {
     return {
       x: idx,
       y: score,
-      label: msg.from,
+      timestamp: msg.from,
+      formattedTime: formatTime(msg.from),
       nickname: msg.nickname,
       text: msg.text
     }
   })
 
+  // FIXED: Crea labels FORMATTATE direttamente
+  // Invece di passare indici, passo le label formattate
+  const xLabels = dataPoints.map((dp, idx) => {
+    // Mostra sempre primo, ultimo e ogni N messaggi
+    const step = Math.max(1, Math.floor(messages.length / 10))
+    
+    if (idx === 0 || idx === messages.length - 1 || idx % step === 0) {
+      return dp.formattedTime
+    }
+    return ''  // Label vuota ma il punto esiste
+  })
+
   const chartColor = config.color || (config.metric === 'sentiment' ? '#00C7BE' : '#FF6B6B')
 
   const chartData = {
-    labels: messages.map((_, idx) => idx),
+    labels: xLabels,  // FIXED: Uso label pre-formattate!
     datasets: [
       {
         label: config.metric === 'sentiment' ? 'Sentiment Score' : 'Toxicity Score',
         data: dataPoints.map(p => p.y),
         borderColor: chartColor,
         backgroundColor: config.showArea 
-          ? chartColor + '30'  // 30 = 20% opacity
+          ? chartColor + '30'
           : 'transparent',
         borderWidth: 3,
         fill: config.showArea,
@@ -580,7 +589,7 @@ function TimelineChartJS({ messages, config }) {
         callbacks: {
           title: (context) => {
             const idx = context[0].dataIndex
-            return `${dataPoints[idx].nickname} - ${dataPoints[idx].label}`
+            return `${dataPoints[idx].nickname} - ${dataPoints[idx].timestamp}`
           },
           label: (context) => {
             const score = context.parsed.y
@@ -606,13 +615,10 @@ function TimelineChartJS({ messages, config }) {
           display: true,
           color: '#8e8e93',
           font: { size: 10 },
-          maxTicksLimit: 10,
-          callback: (value, index) => {
-            if (index % 5 === 0 || index === messages.length - 1) {
-              return dataPoints[index]?.label.split(':').slice(0, 2).join(':') || ''
-            }
-            return ''
-          }
+          maxRotation: 0,
+          minRotation: 0,
+          // FIXED: Mostra TUTTE le label non-vuote!
+          autoSkip: false  // NON skippare automaticamente
         }
       },
       y: {
@@ -640,7 +646,7 @@ function TimelineChartJS({ messages, config }) {
 }
 
 // ============================================
-// TOXICITY GAUGE - CHART.JS DOUGHNUT
+// TOXICITY GAUGE
 // ============================================
 
 function ToxicityGaugeChartJS({ score, config }) {
@@ -717,7 +723,7 @@ function ToxicityGaugeChartJS({ score, config }) {
 }
 
 // ============================================
-// MESSAGE STREAM (Unchanged)
+// MESSAGE STREAM
 // ============================================
 
 function MessageStream({ messages, config }) {
@@ -791,7 +797,7 @@ function MessageBubble({ message, config }) {
 }
 
 // ============================================
-// CUSTOMIZABLE WIDGET (Unchanged)
+// CUSTOMIZABLE WIDGET
 // ============================================
 
 function CustomizableWidget({
@@ -837,7 +843,7 @@ function CustomizableWidget({
 }
 
 // ============================================
-// WIDGET SETTINGS (Unchanged)
+// WIDGET SETTINGS
 // ============================================
 
 function WidgetSettings({ config, participants, onConfigChange }) {
@@ -1030,7 +1036,7 @@ function WidgetSettings({ config, participants, onConfigChange }) {
 }
 
 // ============================================
-// STYLES (Unchanged - iOS Dark Theme)
+// STYLES
 // ============================================
 
 const styles = {
@@ -1040,7 +1046,6 @@ const styles = {
     fontFamily: '-apple-system, BlinkMacSystemFont, "SF Pro Display", sans-serif',
     color: '#fff'
   },
-
   header: {
     position: 'sticky',
     top: 0,
@@ -1052,19 +1057,16 @@ const styles = {
     padding: '1.25rem 0',
     boxShadow: '0 4px 16px rgba(0, 0, 0, 0.3)'
   },
-
   headerContent: {
     maxWidth: '1400px',
     margin: '0 auto',
     padding: '0 2rem'
   },
-
   headerLeft: {
     display: 'flex',
     alignItems: 'center',
     gap: '1.25rem'
   },
-
   logoCircle: {
     width: '56px',
     height: '56px',
@@ -1078,7 +1080,6 @@ const styles = {
     color: '#fff',
     boxShadow: '0 8px 24px rgba(255, 59, 48, 0.5)'
   },
-
   title: {
     margin: 0,
     fontSize: '1.5rem',
@@ -1086,14 +1087,12 @@ const styles = {
     color: '#fff',
     letterSpacing: '-0.02em'
   },
-
   subtitle: {
     margin: 0,
     fontSize: '0.9rem',
     color: '#8e8e93',
     fontWeight: '500'
   },
-
   errorBanner: {
     padding: '1rem 2rem',
     margin: '1rem 2rem',
@@ -1105,7 +1104,6 @@ const styles = {
     fontSize: '0.9rem',
     color: '#FF3B30'
   },
-
   errorIcon: {
     width: '24px',
     height: '24px',
@@ -1117,7 +1115,6 @@ const styles = {
     justifyContent: 'center',
     fontWeight: '700'
   },
-
   loadingContainer: {
     display: 'flex',
     flexDirection: 'column',
@@ -1126,7 +1123,6 @@ const styles = {
     minHeight: '60vh',
     gap: '1.5rem'
   },
-
   spinner: {
     width: '50px',
     height: '50px',
@@ -1135,13 +1131,11 @@ const styles = {
     borderRadius: '50%',
     animation: 'spin 1s linear infinite'
   },
-
   loadingText: {
     fontSize: '0.95rem',
     fontWeight: '500',
     color: '#8e8e93'
   },
-
   widgetGrid: {
     maxWidth: '1400px',
     margin: '0 auto',
@@ -1150,7 +1144,6 @@ const styles = {
     gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))',
     gap: '1.5rem'
   },
-
   iosWidget: {
     borderRadius: '24px',
     padding: '1.75rem',
@@ -1161,11 +1154,9 @@ const styles = {
     boxShadow: '0 8px 32px rgba(0, 0, 0, 0.5), 0 2px 8px rgba(0, 0, 0, 0.3)',
     transition: 'all 0.3s cubic-bezier(0.4, 0, 0.2, 1)'
   },
-
   wideWidget: {
     gridColumn: 'span 2'
   },
-
   widgetHeader: {
     display: 'flex',
     justifyContent: 'space-between',
@@ -1174,27 +1165,23 @@ const styles = {
     paddingBottom: '0.75rem',
     borderBottom: '0.5px solid rgba(255, 255, 255, 0.06)'
   },
-
   widgetTitle: {
     fontSize: '1.05rem',
     fontWeight: '600',
     color: '#fff',
     letterSpacing: '-0.01em'
   },
-
   headerActions: {
     display: 'flex',
     alignItems: 'center',
     gap: '0.875rem'
   },
-
   widgetDot: {
     width: '10px',
     height: '10px',
     borderRadius: '5px',
     boxShadow: '0 0 12px currentColor, 0 0 4px currentColor'
   },
-
   settingsButton: {
     width: '34px',
     height: '34px',
@@ -1210,13 +1197,11 @@ const styles = {
     justifyContent: 'center',
     transition: 'all 0.2s cubic-bezier(0.4, 0, 0.2, 1)'
   },
-
   widgetContent: {
     display: 'flex',
     flexDirection: 'column',
     gap: '1.25rem'
   },
-
   settingsPanel: {
     marginBottom: '1.5rem',
     padding: '1.25rem',
@@ -1231,7 +1216,6 @@ const styles = {
     animation: 'slideDown 0.3s cubic-bezier(0.4, 0, 0.2, 1)',
     boxShadow: '0 4px 16px rgba(0, 0, 0, 0.3)'
   },
-
   settingRow: {
     display: 'flex',
     justifyContent: 'space-between',
@@ -1239,14 +1223,12 @@ const styles = {
     gap: '1rem',
     padding: '0.5rem 0'
   },
-
   settingLabel: {
     fontSize: '0.9rem',
     fontWeight: '500',
     color: '#8e8e93',
     letterSpacing: '-0.01em'
   },
-
   settingSelect: {
     padding: '0.625rem 1rem',
     fontSize: '0.875rem',
@@ -1262,7 +1244,6 @@ const styles = {
     minWidth: '140px',
     transition: 'all 0.2s ease'
   },
-
   numberInput: {
     padding: '0.625rem 1rem',
     fontSize: '0.875rem',
@@ -1278,7 +1259,6 @@ const styles = {
     textAlign: 'center',
     transition: 'all 0.2s ease'
   },
-
   toggleSwitch: {
     position: 'relative',
     display: 'inline-block',
@@ -1286,13 +1266,11 @@ const styles = {
     height: '28px',
     cursor: 'pointer'
   },
-
   toggleInput: {
     opacity: 0,
     width: 0,
     height: 0
   },
-
   toggleSlider: {
     position: 'absolute',
     top: 0,
@@ -1305,7 +1283,6 @@ const styles = {
     alignItems: 'center',
     padding: '0 2px'
   },
-
   kpiValue: {
     fontSize: '3.5rem',
     fontWeight: '700',
@@ -1315,7 +1292,6 @@ const styles = {
     letterSpacing: '-0.03em',
     textShadow: '0 2px 8px rgba(0, 0, 0, 0.3)'
   },
-
   kpiLabel: {
     fontSize: '0.9rem',
     fontWeight: '500',
@@ -1324,7 +1300,6 @@ const styles = {
     letterSpacing: '-0.01em',
     marginTop: '0.5rem'
   },
-
   emptyState: {
     textAlign: 'center',
     padding: '2rem',
@@ -1332,7 +1307,6 @@ const styles = {
     fontSize: '0.9rem',
     fontWeight: '500'
   },
-
   gaugeContainer: {
     display: 'flex',
     flexDirection: 'column',
@@ -1341,14 +1315,12 @@ const styles = {
     gap: '1.25rem',
     padding: '1.5rem 0'
   },
-
   gaugeValue: {
     fontSize: '2.75rem',
     fontWeight: '700',
     letterSpacing: '-0.02em',
     textShadow: '0 2px 8px rgba(0, 0, 0, 0.3)'
   },
-
   gaugeLabel: {
     fontSize: '0.8rem',
     fontWeight: '600',
@@ -1357,14 +1329,12 @@ const styles = {
     marginTop: '0.375rem',
     textTransform: 'uppercase'
   },
-
   gaugeDetails: {
     width: '100%',
     display: 'flex',
     flexDirection: 'column',
     gap: '0.625rem'
   },
-
   detailItem: {
     display: 'flex',
     justifyContent: 'space-between',
@@ -1375,21 +1345,18 @@ const styles = {
     WebkitBackdropFilter: 'blur(10px)',
     border: '0.5px solid rgba(255, 255, 255, 0.06)'
   },
-
   detailLabel: {
     fontSize: '0.85rem',
     fontWeight: '500',
     color: '#8e8e93',
     letterSpacing: '-0.01em'
   },
-
   detailValue: {
     fontSize: '0.95rem',
     fontWeight: '600',
     color: '#fff',
     letterSpacing: '-0.01em'
   },
-
   messageStreamContainer: {
     display: 'flex',
     flexDirection: 'column',
@@ -1398,7 +1365,6 @@ const styles = {
     overflowY: 'auto',
     paddingRight: '0.5rem'
   },
-
   messageBubble: {
     padding: '1rem 1.25rem',
     borderRadius: '16px',
@@ -1409,26 +1375,22 @@ const styles = {
     transition: 'all 0.2s cubic-bezier(0.4, 0, 0.2, 1)',
     boxShadow: '0 2px 8px rgba(0, 0, 0, 0.2)'
   },
-
   bubbleHeader: {
     display: 'flex',
     justifyContent: 'space-between',
     alignItems: 'center',
     marginBottom: '0.625rem'
   },
-
   bubbleAuthor: {
     fontSize: '0.9rem',
     fontWeight: '600',
     color: '#fff',
     letterSpacing: '-0.01em'
   },
-
   bubbleBadges: {
     display: 'flex',
     gap: '0.5rem'
   },
-
   sentimentBadge: {
     fontSize: '0.75rem',
     fontWeight: '700',
@@ -1437,7 +1399,6 @@ const styles = {
     borderRadius: '8px',
     letterSpacing: '0.02em'
   },
-
   toxicBadge: {
     fontSize: '0.7rem',
     fontWeight: '700',
@@ -1447,7 +1408,6 @@ const styles = {
     letterSpacing: '0.5px',
     textTransform: 'uppercase'
   },
-
   bubbleText: {
     margin: 0,
     fontSize: '0.9rem',
@@ -1455,7 +1415,6 @@ const styles = {
     color: '#d1d1d6',
     letterSpacing: '-0.01em'
   },
-
   bubbleTime: {
     display: 'block',
     marginTop: '0.625rem',
@@ -1466,7 +1425,6 @@ const styles = {
   }
 }
 
-// CSS Animations
 const styleSheet = document.createElement('style')
 styleSheet.textContent = `
 @keyframes spin {

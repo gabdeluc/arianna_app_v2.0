@@ -1,11 +1,14 @@
 """
 BERT Toxicity Microservice
 
-Servizio indipendente per toxicity analysis usando BERT.
-Classifica testi su scala di tossicità 0-1.
+EDUCATIONAL NOTE FOR FUTURE STUDENTS:
+This microservice detects toxic/offensive content in text using BERT.
+Unlike sentiment (1-5 stars), this is a binary classification: toxic or non-toxic.
+The output includes a 0-1 score and a severity level (low/medium/high).
 
 Port: 5003
 Model: gravitee-io/bert-small-toxicity
+Output: toxicity_score (0-1), is_toxic (bool), severity (low/medium/high)
 """
 
 from fastapi import FastAPI, HTTPException, status
@@ -30,7 +33,7 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="BERT Toxicity Microservice",
-    description="Servizio di toxicity detection con classificazione 0-1",
+    description="Toxicity detection with 0-1 classification",
     version="1.0.0",
     docs_url="/docs",
     redoc_url="/redoc"
@@ -41,51 +44,56 @@ app = FastAPI(
 # ============================================
 
 class ToxicityRequest(BaseModel):
+    """Request for analyzing toxicity in a single text."""
     text: str = Field(
         ...,
         min_length=1,
         max_length=5000,
-        description="Testo da analizzare"
+        description="Text to analyze"
     )
     
     @validator('text')
     def text_not_empty(cls, v):
         if not v.strip():
-            raise ValueError('Il testo non può essere vuoto')
+            raise ValueError('Text cannot be empty')
         return v.strip()
 
 
 class BatchToxicityRequest(BaseModel):
+    """Request for analyzing toxicity in multiple texts."""
     texts: List[str] = Field(
         ...,
         min_items=1,
         max_items=100,
-        description="Lista di testi da analizzare (max 100)"
+        description="List of texts to analyze (max 100)"
     )
     
     @validator('texts')
     def texts_not_empty(cls, v):
         cleaned = [t.strip() for t in v if t.strip()]
         if not cleaned:
-            raise ValueError('Almeno un testo deve essere non vuoto')
+            raise ValueError('At least one text must be non-empty')
         return cleaned
 
 
 class ToxicityResponse(BaseModel):
-    toxicity_score: float = Field(..., ge=0.0, le=1.0, description="Score tossicità 0.0-1.0")
-    is_toxic: bool = Field(..., description="True se tossico (score > 0.5)")
-    confidence: float = Field(..., ge=0.0, le=1.0, description="Confidenza predizione")
+    """Response with toxicity detection results."""
+    toxicity_score: float = Field(..., ge=0.0, le=1.0, description="Toxicity score 0.0-1.0")
+    is_toxic: bool = Field(..., description="True if toxic (score > 0.5)")
+    confidence: float = Field(..., ge=0.0, le=1.0, description="Prediction confidence")
     label: str = Field(..., description="toxic/non-toxic")
-    processing_time_ms: Optional[float] = Field(None, description="Tempo elaborazione in ms")
+    processing_time_ms: Optional[float] = Field(None, description="Processing time in ms")
 
 
 class BatchToxicityResponse(BaseModel):
+    """Response for batch toxicity detection."""
     results: List[ToxicityResponse]
     total_processed: int
     total_time_ms: float
 
 
 class HealthResponse(BaseModel):
+    """Health check response."""
     status: str
     model_loaded: bool
     device: str
@@ -93,6 +101,7 @@ class HealthResponse(BaseModel):
 
 
 class ModelInfoResponse(BaseModel):
+    """Detailed model information."""
     model_name: str
     architecture: str
     task: str
@@ -107,24 +116,29 @@ class ModelInfoResponse(BaseModel):
 
 class BERTToxicityModel:
     """
-    Singleton per gestire il modello BERT Toxicity.
+    Singleton for managing the BERT toxicity model.
     
-    Features:
-    - Lazy loading
-    - Thread-safe
-    - Batch processing ottimizzato
-    - Binary classification (toxic/non-toxic)
+    EDUCATIONAL NOTE:
+    Binary classification: the model outputs 2 probabilities (non-toxic, toxic).
+    We use probability of "toxic" class as the toxicity score.
+    
+    Severity levels based on score:
+    - LOW: score < 0.4 (safe conversation)
+    - MEDIUM: score 0.4-0.7 (borderline, watch carefully)
+    - HIGH: score > 0.7 (toxic, needs moderation)
     """
     
     _instance = None
     
     def __new__(cls):
+        """Singleton pattern: only one instance can exist."""
         if cls._instance is None:
             cls._instance = super().__new__(cls)
             cls._instance._initialized = False
         return cls._instance
     
     def __init__(self):
+        """Initialize BERT toxicity model (runs only once)."""
         if self._initialized:
             return
         
@@ -133,30 +147,30 @@ class BERTToxicityModel:
             'gravitee-io/bert-small-toxicity'
         )
         
-        # Determina device (GPU se disponibile)
+        # Use GPU if available
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         
-        # Threshold per classificazione binaria
+        # Threshold for binary classification
         self.threshold = 0.5
         
         logger.info("="*60)
-        logger.info("🚀 Inizializzazione BERT Toxicity Service")
+        logger.info("🚀 Initializing BERT Toxicity Service")
         logger.info(f"📦 Model: {self.model_name}")
         logger.info(f"🖥️  Device: {self.device}")
         logger.info(f"🎯 Threshold: {self.threshold}")
         
         try:
-            # Carica tokenizer
-            logger.info("📥 Caricamento tokenizer...")
+            # Load tokenizer
+            logger.info("📥 Loading tokenizer...")
             self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
             
-            # Carica model
-            logger.info("📥 Caricamento modello...")
+            # Load model
+            logger.info("📥 Loading model...")
             self.model = AutoModelForSequenceClassification.from_pretrained(
                 self.model_name
             ).to(self.device)
             
-            # Modalità evaluation (no training)
+            # Set to evaluation mode
             self.model.eval()
             
             # Label mapping (0=non-toxic, 1=toxic)
@@ -164,11 +178,11 @@ class BERTToxicityModel:
             
             self._initialized = True
             
-            logger.info("✅ Modello caricato con successo!")
+            logger.info("✅ Model loaded successfully!")
             logger.info("="*60)
             
         except Exception as e:
-            logger.error(f"❌ Errore caricamento modello: {e}")
+            logger.error(f"❌ Model loading error: {e}")
             raise
     
     def analyze(
@@ -177,14 +191,14 @@ class BERTToxicityModel:
         return_probabilities: bool = False
     ) -> Dict[str, Any]:
         """
-        Analizza tossicità di un singolo testo.
+        Analyze toxicity of a single text.
         
         Args:
-            text: Testo da analizzare
-            return_probabilities: Se True, ritorna anche le probabilità per classe
+            text: Text to analyze
+            return_probabilities: If True, include per-class probabilities
             
         Returns:
-            Dict con toxicity_score, is_toxic, confidence, label
+            Dict with toxicity_score, is_toxic, confidence, label
         """
         start_time = time.time()
         
@@ -204,17 +218,17 @@ class BERTToxicityModel:
                 logits = outputs.logits
                 probs = torch.softmax(logits, dim=1)[0]
             
-            # Score tossicità (probabilità classe "toxic")
+            # Toxicity score = probability of "toxic" class
             toxicity_score = probs[1].item()
             
-            # Classificazione binaria
+            # Binary classification
             is_toxic = toxicity_score > self.threshold
             predicted_class = 1 if is_toxic else 0
             
-            # Confidence = probabilità della classe predetta
+            # Confidence = probability of the predicted class
             confidence = probs[predicted_class].item()
             
-            processing_time = (time.time() - start_time) * 1000  # ms
+            processing_time = (time.time() - start_time) * 1000
             
             result = {
                 'toxicity_score': round(toxicity_score, 3),
@@ -233,7 +247,7 @@ class BERTToxicityModel:
             return result
             
         except Exception as e:
-            logger.error(f"Errore durante analisi: {e}")
+            logger.error(f"Analysis error: {e}")
             raise
     
     def batch_analyze(
@@ -241,13 +255,13 @@ class BERTToxicityModel:
         texts: List[str]
     ) -> List[Dict[str, Any]]:
         """
-        Analizza batch di testi (più efficiente).
+        Analyze batch of texts (10x faster than individual calls).
         
         Args:
-            texts: Lista di testi da analizzare
+            texts: List of texts to analyze
             
         Returns:
-            Lista di risultati toxicity
+            List of toxicity results
         """
         start_time = time.time()
         
@@ -281,20 +295,20 @@ class BERTToxicityModel:
                     'is_toxic': is_toxic,
                     'confidence': round(confidence, 3),
                     'label': self.id2label[predicted_class],
-                    'processing_time_ms': None  # Calcolato a livello batch
+                    'processing_time_ms': None  # Calculated at batch level
                 })
             
             total_time = (time.time() - start_time) * 1000
             avg_time = total_time / len(texts)
             
-            # Aggiungi tempo medio per testo
+            # Add average time to each result
             for result in results:
                 result['processing_time_ms'] = round(avg_time, 2)
             
             return results
             
         except Exception as e:
-            logger.error(f"Errore durante batch analysis: {e}")
+            logger.error(f"Batch analysis error: {e}")
             raise
 
 # ============================================
@@ -309,7 +323,7 @@ toxicity_model: Optional[BERTToxicityModel] = None
 
 @app.on_event("startup")
 async def startup_event():
-    """Inizializza il modello all'avvio del servizio"""
+    """Initialize model when service starts."""
     global toxicity_model
     
     logger.info("🚀 Starting BERT Toxicity Microservice...")
@@ -324,10 +338,10 @@ async def startup_event():
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    """Cleanup al shutdown"""
+    """Cleanup on shutdown."""
     logger.info("🛑 Shutting down BERT Toxicity Microservice...")
     
-    # Cleanup GPU memory se necessario
+    # Free GPU memory if using CUDA
     if toxicity_model and toxicity_model.device == "cuda":
         torch.cuda.empty_cache()
     
@@ -339,7 +353,7 @@ async def shutdown_event():
 
 @app.get("/", tags=["Health"])
 def root():
-    """Root endpoint - informazioni base sul servizio"""
+    """Root endpoint with service information."""
     return {
         "service": "BERT Toxicity Analysis Microservice",
         "version": "1.0.0",
@@ -358,9 +372,9 @@ def root():
 @app.get("/health", response_model=HealthResponse, tags=["Health"])
 def health_check():
     """
-    Health check endpoint per monitoring.
+    Health check endpoint.
     
-    Usato da Docker healthcheck e orchestratori.
+    Used by Docker healthcheck and monitoring tools.
     """
     if not toxicity_model or not toxicity_model._initialized:
         raise HTTPException(
@@ -379,35 +393,19 @@ def health_check():
 @app.post("/analyze", response_model=ToxicityResponse, tags=["Toxicity Analysis"])
 def analyze_toxicity(request: ToxicityRequest):
     """
-    Analizza tossicità di un singolo testo.
+    Analyze toxicity of a single text.
     
-    **Input:**
-    - text: Testo da analizzare (1-5000 caratteri)
+    Example Request:
+        {"text": "You are stupid and useless!"}
     
-    **Output:**
-    - toxicity_score: Score 0.0-1.0 (maggiore = più tossico)
-    - is_toxic: True se score > 0.5
-    - confidence: Confidenza predizione 0.0-1.0
-    - label: "toxic" o "non-toxic"
-    - processing_time_ms: Tempo elaborazione
-    
-    **Example:**
-    ```json
-    {
-      "text": "You are stupid and useless!"
-    }
-    ```
-    
-    **Response:**
-    ```json
-    {
-      "toxicity_score": 0.89,
-      "is_toxic": true,
-      "confidence": 0.89,
-      "label": "toxic",
-      "processing_time_ms": 42.15
-    }
-    ```
+    Example Response:
+        {
+            "toxicity_score": 0.89,
+            "is_toxic": true,
+            "confidence": 0.89,
+            "label": "toxic",
+            "processing_time_ms": 42.15
+        }
     """
     if not toxicity_model or not toxicity_model._initialized:
         raise HTTPException(
@@ -420,7 +418,7 @@ def analyze_toxicity(request: ToxicityRequest):
         return ToxicityResponse(**result)
         
     except Exception as e:
-        logger.error(f"Error analyzing toxicity: {e}")
+        logger.error(f"Toxicity analysis error: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error during toxicity analysis: {str(e)}"
@@ -430,38 +428,34 @@ def analyze_toxicity(request: ToxicityRequest):
 @app.post("/batch", response_model=BatchToxicityResponse, tags=["Toxicity Analysis"])
 def batch_analyze_toxicity(request: BatchToxicityRequest):
     """
-    Analizza tossicità per batch di testi (più efficiente).
+    Analyze toxicity for batch of texts (much faster!).
     
-    **Limiti:**
-    - Minimo: 1 testo
-    - Massimo: 100 testi per richiesta
+    EDUCATIONAL NOTE:
+    Batch processing is ~10x faster than individual calls.
     
-    **Performance:**
-    - Batch processing è ~10x più veloce di chiamate singole
+    Limits:
+    - Minimum: 1 text
+    - Maximum: 100 texts per request
     
-    **Example:**
-    ```json
-    {
-      "texts": [
-        "Great work!",
-        "This is terrible and you are awful",
-        "Thank you for your help"
-      ]
-    }
-    ```
+    Example Request:
+        {
+            "texts": [
+                "Great work!",
+                "This is terrible and you are awful",
+                "Thank you for your help"
+            ]
+        }
     
-    **Response:**
-    ```json
-    {
-      "results": [
-        {"toxicity_score": 0.05, "is_toxic": false, "label": "non-toxic"},
-        {"toxicity_score": 0.92, "is_toxic": true, "label": "toxic"},
-        {"toxicity_score": 0.03, "is_toxic": false, "label": "non-toxic"}
-      ],
-      "total_processed": 3,
-      "total_time_ms": 115.8
-    }
-    ```
+    Example Response:
+        {
+            "results": [
+                {"toxicity_score": 0.05, "is_toxic": false, "label": "non-toxic"},
+                {"toxicity_score": 0.92, "is_toxic": true, "label": "toxic"},
+                {"toxicity_score": 0.03, "is_toxic": false, "label": "non-toxic"}
+            ],
+            "total_processed": 3,
+            "total_time_ms": 115.8
+        }
     """
     if not toxicity_model or not toxicity_model._initialized:
         raise HTTPException(
@@ -481,7 +475,7 @@ def batch_analyze_toxicity(request: BatchToxicityRequest):
         )
         
     except Exception as e:
-        logger.error(f"Error in batch analysis: {e}")
+        logger.error(f"Batch analysis error: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error during batch toxicity analysis: {str(e)}"
@@ -491,10 +485,9 @@ def batch_analyze_toxicity(request: BatchToxicityRequest):
 @app.get("/info", response_model=ModelInfoResponse, tags=["Info"])
 def model_info():
     """
-    Informazioni dettagliate sul modello.
+    Get detailed model information.
     
-    Returns:
-        Dettagli su architettura, capacità, limiti
+    Returns architecture details, thresholds, etc.
     """
     if not toxicity_model or not toxicity_model._initialized:
         raise HTTPException(
@@ -513,7 +506,7 @@ def model_info():
     )
 
 # ============================================
-# MAIN (per test locali)
+# MAIN (for local testing)
 # ============================================
 
 if __name__ == "__main__":

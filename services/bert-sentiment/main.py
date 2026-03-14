@@ -1,11 +1,14 @@
 """
 BERT Sentiment Microservice
 
-Servizio indipendente per sentiment analysis usando BERT multilingual.
-Classifica testi su scala 1-5 stelle.
+EDUCATIONAL NOTE FOR FUTURE STUDENTS:
+This is an independent microservice that runs a BERT model for sentiment analysis.
+It receives text as input and returns a 1-5 star rating. The backend gateway then
+normalizes this to positive/neutral/negative labels for the frontend.
 
 Port: 5001
-Model: nlptown/bert-base-multilingual-uncased-sentiment
+Model: nlptown/bert-base-multilingual-uncased-sentiment (110M parameters)
+Output: 1.0-5.0 stars (1=very negative, 5=very positive)
 """
 
 from fastapi import FastAPI, HTTPException, status
@@ -17,7 +20,7 @@ import logging
 import os
 import time
 
-# Setup logging
+# Setup logging so we can debug issues in production
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
@@ -30,7 +33,7 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(
     title="BERT Sentiment Microservice",
-    description="Servizio di sentiment analysis con classificazione 1-5 stelle",
+    description="Sentiment analysis with 1-5 star classification",
     version="1.0.0",
     docs_url="/docs",
     redoc_url="/redoc"
@@ -41,50 +44,57 @@ app = FastAPI(
 # ============================================
 
 class SentimentRequest(BaseModel):
+    """Request for analyzing a single text."""
     text: str = Field(
         ...,
         min_length=1,
         max_length=5000,
-        description="Testo da analizzare"
+        description="Text to analyze"
     )
     
     @validator('text')
     def text_not_empty(cls, v):
+        """Ensure the text isn't just whitespace."""
         if not v.strip():
-            raise ValueError('Il testo non può essere vuoto')
+            raise ValueError('Text cannot be empty')
         return v.strip()
 
 
 class BatchSentimentRequest(BaseModel):
+    """Request for analyzing multiple texts in one go (much faster!)."""
     texts: List[str] = Field(
         ...,
         min_items=1,
         max_items=100,
-        description="Lista di testi da analizzare (max 100)"
+        description="List of texts to analyze (max 100)"
     )
     
     @validator('texts')
     def texts_not_empty(cls, v):
+        """Filter out empty strings."""
         cleaned = [t.strip() for t in v if t.strip()]
         if not cleaned:
-            raise ValueError('Almeno un testo deve essere non vuoto')
+            raise ValueError('At least one text must be non-empty')
         return cleaned
 
 
 class SentimentResponse(BaseModel):
-    stars: float = Field(..., ge=1.0, le=5.0, description="Punteggio sentiment 1.0-5.0")
-    sentiment: str = Field(..., description="Categoria sentiment")
-    confidence: float = Field(..., ge=0.0, le=1.0, description="Confidenza predizione")
-    processing_time_ms: Optional[float] = Field(None, description="Tempo elaborazione in ms")
+    """Response with sentiment analysis results."""
+    stars: float = Field(..., ge=1.0, le=5.0, description="Score from 1.0 to 5.0")
+    sentiment: str = Field(..., description="Sentiment category")
+    confidence: float = Field(..., ge=0.0, le=1.0, description="Prediction confidence")
+    processing_time_ms: Optional[float] = Field(None, description="Processing time in milliseconds")
 
 
 class BatchSentimentResponse(BaseModel):
+    """Response for batch predictions."""
     results: List[SentimentResponse]
     total_processed: int
     total_time_ms: float
 
 
 class HealthResponse(BaseModel):
+    """Health check response."""
     status: str
     model_loaded: bool
     device: str
@@ -92,6 +102,7 @@ class HealthResponse(BaseModel):
 
 
 class ModelInfoResponse(BaseModel):
+    """Detailed model information."""
     model_name: str
     architecture: str
     task: str
@@ -107,25 +118,30 @@ class ModelInfoResponse(BaseModel):
 
 class BERTSentimentModel:
     """
-    Singleton per gestire il modello BERT.
+    Singleton pattern for managing the BERT model.
+    
+    EDUCATIONAL NOTE:
+    We use Singleton because BERT is heavy (~500MB in RAM). We want to load it ONCE
+    when the service starts, not on every request. All requests share the same model instance.
     
     Features:
-    - Lazy loading
+    - Lazy loading (loads on first use)
     - Thread-safe
-    - Batch processing ottimizzato
-    - Error handling robusto
+    - Batch processing optimization
+    - Error handling
     """
     
     _instance = None
-    _lock = None
     
     def __new__(cls):
+        """Singleton pattern: only one instance can exist."""
         if cls._instance is None:
             cls._instance = super().__new__(cls)
             cls._instance._initialized = False
         return cls._instance
     
     def __init__(self):
+        """Initialize BERT model (runs only once due to singleton)."""
         if self._initialized:
             return
         
@@ -134,29 +150,29 @@ class BERTSentimentModel:
             'nlptown/bert-base-multilingual-uncased-sentiment'
         )
         
-        # Determina device (GPU se disponibile)
+        # Use GPU if available (10x faster than CPU)
         self.device = "cuda" if torch.cuda.is_available() else "cpu"
         
         logger.info("="*60)
-        logger.info("🚀 Inizializzazione BERT Sentiment Service")
+        logger.info("🚀 Initializing BERT Sentiment Service")
         logger.info(f"📦 Model: {self.model_name}")
         logger.info(f"🖥️  Device: {self.device}")
         
         try:
-            # Carica tokenizer
-            logger.info("📥 Caricamento tokenizer...")
+            # Load tokenizer (converts text to numbers BERT understands)
+            logger.info("📥 Loading tokenizer...")
             self.tokenizer = AutoTokenizer.from_pretrained(self.model_name)
             
-            # Carica model
-            logger.info("📥 Caricamento modello...")
+            # Load model (downloads ~500MB on first run, then cached)
+            logger.info("📥 Loading model...")
             self.model = AutoModelForSequenceClassification.from_pretrained(
                 self.model_name
             ).to(self.device)
             
-            # Modalità evaluation (no training)
+            # Set to evaluation mode (disables dropout, batch norm)
             self.model.eval()
             
-            # Mappa sentiment labels
+            # Map model outputs to sentiment labels
             self.sentiment_map = {
                 0: "very_negative",
                 1: "negative",
@@ -165,16 +181,16 @@ class BERTSentimentModel:
                 4: "very_positive"
             }
             
-            # Stars values per weighted average
+            # Stars values for weighted average calculation
             self.stars_values = torch.tensor([1.0, 2.0, 3.0, 4.0, 5.0]).to(self.device)
             
             self._initialized = True
             
-            logger.info("✅ Modello caricato con successo!")
+            logger.info("✅ Model loaded successfully!")
             logger.info("="*60)
             
         except Exception as e:
-            logger.error(f"❌ Errore caricamento modello: {e}")
+            logger.error(f"❌ Model loading error: {e}")
             raise
     
     def analyze(
@@ -183,41 +199,48 @@ class BERTSentimentModel:
         return_probabilities: bool = False
     ) -> Dict[str, Any]:
         """
-        Analizza sentiment di un singolo testo.
+        Analyze sentiment of a single text.
+        
+        EDUCATIONAL NOTE:
+        The model outputs 5 probabilities (one per star rating).
+        We calculate a weighted average: stars = sum(probability[i] * star[i])
+        Example: [0.1, 0.1, 0.2, 0.4, 0.2] → 1*0.1 + 2*0.1 + 3*0.2 + 4*0.4 + 5*0.2 = 3.5 stars
         
         Args:
-            text: Testo da analizzare
-            return_probabilities: Se True, ritorna anche le probabilità per classe
+            text: Text to analyze
+            return_probabilities: If True, include per-class probabilities
             
         Returns:
-            Dict con stars, sentiment, confidence
+            Dict with stars, sentiment, confidence, processing_time_ms
         """
         start_time = time.time()
         
         try:
-            # Tokenization
+            # Tokenization: Convert text to token IDs
+            # Example: "Hello world" → [101, 7592, 2088, 102]
             inputs = self.tokenizer(
                 text,
                 return_tensors="pt",
                 truncation=True,
-                max_length=512,
+                max_length=512,  # BERT's max input length
                 padding=True
             ).to(self.device)
             
-            # Inference
+            # Inference: Run the model
+            # We use torch.no_grad() to save memory (we're not training)
             with torch.no_grad():
                 outputs = self.model(**inputs)
                 logits = outputs.logits
                 probs = torch.softmax(logits, dim=1)[0]
             
-            # Calcola stelle (media pesata delle probabilità)
+            # Calculate weighted stars (more precise than just argmax)
             weighted_stars = (probs * self.stars_values).sum().item()
             
-            # Classe predetta (argmax)
+            # Predicted class (most likely star rating)
             predicted_class = torch.argmax(probs).item()
             confidence = probs[predicted_class].item()
             
-            processing_time = (time.time() - start_time) * 1000  # ms
+            processing_time = (time.time() - start_time) * 1000  # Convert to milliseconds
             
             result = {
                 'stars': round(weighted_stars, 2),
@@ -232,7 +255,7 @@ class BERTSentimentModel:
             return result
             
         except Exception as e:
-            logger.error(f"Errore durante analisi: {e}")
+            logger.error(f"Analysis error: {e}")
             raise
     
     def batch_analyze(
@@ -240,18 +263,24 @@ class BERTSentimentModel:
         texts: List[str]
     ) -> List[Dict[str, Any]]:
         """
-        Analizza batch di testi (più efficiente).
+        Analyze batch of texts (10x faster than individual calls).
+        
+        EDUCATIONAL NOTE:
+        Batch processing is faster because:
+        1. GPU can process all texts in parallel
+        2. Tokenization is vectorized
+        3. Only 1 model forward pass instead of N
         
         Args:
-            texts: Lista di testi da analizzare
+            texts: List of texts to analyze
             
         Returns:
-            Lista di risultati sentiment
+            List of sentiment results
         """
         start_time = time.time()
         
         try:
-            # Batch tokenization
+            # Batch tokenization (processes all texts at once)
             inputs = self.tokenizer(
                 texts,
                 return_tensors="pt",
@@ -266,7 +295,7 @@ class BERTSentimentModel:
                 logits = outputs.logits
                 probs = torch.softmax(logits, dim=1)
             
-            # Process results
+            # Process each result
             results = []
             
             for i, prob in enumerate(probs):
@@ -278,27 +307,27 @@ class BERTSentimentModel:
                     'stars': round(weighted_stars, 2),
                     'sentiment': self.sentiment_map[predicted_class],
                     'confidence': round(confidence, 3),
-                    'processing_time_ms': None  # Calcolato a livello batch
+                    'processing_time_ms': None  # Calculated at batch level
                 })
             
             total_time = (time.time() - start_time) * 1000
             avg_time = total_time / len(texts)
             
-            # Aggiungi tempo medio per testo
+            # Add average time to each result
             for result in results:
                 result['processing_time_ms'] = round(avg_time, 2)
             
             return results
             
         except Exception as e:
-            logger.error(f"Errore durante batch analysis: {e}")
+            logger.error(f"Batch analysis error: {e}")
             raise
 
 # ============================================
 # GLOBAL MODEL INSTANCE
 # ============================================
 
-# Il modello viene inizializzato all'avvio del servizio
+# Model is initialized on service startup
 bert_model: Optional[BERTSentimentModel] = None
 
 # ============================================
@@ -307,7 +336,7 @@ bert_model: Optional[BERTSentimentModel] = None
 
 @app.on_event("startup")
 async def startup_event():
-    """Inizializza il modello all'avvio del servizio"""
+    """Initialize model when service starts."""
     global bert_model
     
     logger.info("🚀 Starting BERT Sentiment Microservice...")
@@ -322,10 +351,10 @@ async def startup_event():
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    """Cleanup al shutdown"""
+    """Cleanup on shutdown."""
     logger.info("🛑 Shutting down BERT Sentiment Microservice...")
     
-    # Cleanup GPU memory se necessario
+    # Free GPU memory if using CUDA
     if bert_model and bert_model.device == "cuda":
         torch.cuda.empty_cache()
     
@@ -337,7 +366,7 @@ async def shutdown_event():
 
 @app.get("/", tags=["Health"])
 def root():
-    """Root endpoint - informazioni base sul servizio"""
+    """Root endpoint with service information."""
     return {
         "service": "BERT Sentiment Analysis Microservice",
         "version": "1.0.0",
@@ -356,9 +385,9 @@ def root():
 @app.get("/health", response_model=HealthResponse, tags=["Health"])
 def health_check():
     """
-    Health check endpoint per monitoring.
+    Health check endpoint.
     
-    Usato da Docker healthcheck e orchestratori.
+    Used by Docker healthcheck and monitoring tools.
     """
     if not bert_model or not bert_model._initialized:
         raise HTTPException(
@@ -377,33 +406,18 @@ def health_check():
 @app.post("/analyze", response_model=SentimentResponse, tags=["Sentiment Analysis"])
 def analyze_sentiment(request: SentimentRequest):
     """
-    Analizza sentiment di un singolo testo.
+    Analyze sentiment of a single text.
     
-    **Input:**
-    - text: Testo da analizzare (1-5000 caratteri)
+    Example Request:
+        {"text": "This meeting was very productive!"}
     
-    **Output:**
-    - stars: Punteggio 1.0-5.0
-    - sentiment: very_negative, negative, neutral, positive, very_positive
-    - confidence: Confidenza predizione 0.0-1.0
-    - processing_time_ms: Tempo elaborazione
-    
-    **Example:**
-    ```json
-    {
-      "text": "This meeting was very productive!"
-    }
-    ```
-    
-    **Response:**
-    ```json
-    {
-      "stars": 4.8,
-      "sentiment": "very_positive",
-      "confidence": 0.92,
-      "processing_time_ms": 45.23
-    }
-    ```
+    Example Response:
+        {
+            "stars": 4.8,
+            "sentiment": "very_positive",
+            "confidence": 0.92,
+            "processing_time_ms": 45.23
+        }
     """
     if not bert_model or not bert_model._initialized:
         raise HTTPException(
@@ -416,7 +430,7 @@ def analyze_sentiment(request: SentimentRequest):
         return SentimentResponse(**result)
         
     except Exception as e:
-        logger.error(f"Error analyzing sentiment: {e}")
+        logger.error(f"Sentiment analysis error: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error during sentiment analysis: {str(e)}"
@@ -426,38 +440,35 @@ def analyze_sentiment(request: SentimentRequest):
 @app.post("/batch", response_model=BatchSentimentResponse, tags=["Sentiment Analysis"])
 def batch_analyze_sentiment(request: BatchSentimentRequest):
     """
-    Analizza sentiment per batch di testi (più efficiente).
+    Analyze sentiment for batch of texts (much faster!).
     
-    **Limiti:**
-    - Minimo: 1 testo
-    - Massimo: 100 testi per richiesta
+    EDUCATIONAL NOTE:
+    Batch processing is ~10x faster than individual calls.
+    Use this when analyzing multiple messages.
     
-    **Performance:**
-    - Batch processing è ~10x più veloce di chiamate singole
+    Limits:
+    - Minimum: 1 text
+    - Maximum: 100 texts per request
     
-    **Example:**
-    ```json
-    {
-      "texts": [
-        "Great work!",
-        "This is terrible",
-        "Not sure about this"
-      ]
-    }
-    ```
+    Example Request:
+        {
+            "texts": [
+                "Great work!",
+                "This is terrible",
+                "Not sure about this"
+            ]
+        }
     
-    **Response:**
-    ```json
-    {
-      "results": [
-        {"stars": 4.9, "sentiment": "very_positive", "confidence": 0.95},
-        {"stars": 1.2, "sentiment": "very_negative", "confidence": 0.88},
-        {"stars": 2.8, "sentiment": "neutral", "confidence": 0.71}
-      ],
-      "total_processed": 3,
-      "total_time_ms": 120.5
-    }
-    ```
+    Example Response:
+        {
+            "results": [
+                {"stars": 4.9, "sentiment": "very_positive", "confidence": 0.95},
+                {"stars": 1.2, "sentiment": "very_negative", "confidence": 0.88},
+                {"stars": 2.8, "sentiment": "neutral", "confidence": 0.71}
+            ],
+            "total_processed": 3,
+            "total_time_ms": 120.5
+        }
     """
     if not bert_model or not bert_model._initialized:
         raise HTTPException(
@@ -477,7 +488,7 @@ def batch_analyze_sentiment(request: BatchSentimentRequest):
         )
         
     except Exception as e:
-        logger.error(f"Error in batch analysis: {e}")
+        logger.error(f"Batch analysis error: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Error during batch sentiment analysis: {str(e)}"
@@ -487,10 +498,9 @@ def batch_analyze_sentiment(request: BatchSentimentRequest):
 @app.get("/info", response_model=ModelInfoResponse, tags=["Info"])
 def model_info():
     """
-    Informazioni dettagliate sul modello.
+    Get detailed model information.
     
-    Returns:
-        Dettagli su architettura, capacità, limiti
+    Returns architecture details, supported languages, etc.
     """
     if not bert_model or not bert_model._initialized:
         raise HTTPException(
@@ -510,7 +520,7 @@ def model_info():
     )
 
 # ============================================
-# MAIN (per test locali)
+# MAIN (for local testing)
 # ============================================
 
 if __name__ == "__main__":
